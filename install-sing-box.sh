@@ -136,7 +136,7 @@ Commands:
   remove-user    Remove one user from a protocol and reload sing-box
   regenerate     Re-render config/share artifacts from saved state and reload sing-box
   update-sing-box
-                 Upgrade sing-box from the configured repository, validate config, and restart service
+                 Upgrade sing-box via the official install script, validate config, and restart service
   update-geo     Refresh local geo rule-set files under the sing-box rule-set directory
   routing-menu   Interactive routing policy menu
   client-menu    Interactive sing-box client config menu
@@ -1591,30 +1591,7 @@ install_packages() {
 }
 
 install_dependencies() {
-  install_packages ca-certificates curl gpg jq iproute2 openssl socat
-}
-
-ensure_sagernet_repo() {
-  if [[ -f /etc/apt/sources.list.d/sagernet.sources && -f /etc/apt/keyrings/sagernet.asc ]]; then
-    return 0
-  fi
-
-  install_packages ca-certificates curl gpg
-  install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc
-  chmod a+r /etc/apt/keyrings/sagernet.asc
-
-  cat > /etc/apt/sources.list.d/sagernet.sources <<'EOF'
-Types: deb
-URIs: https://deb.sagernet.org/
-Suites: *
-Components: *
-Enabled: yes
-Signed-By: /etc/apt/keyrings/sagernet.asc
-EOF
-
-  APT_UPDATED=0
-  ensure_apt_updated
+  install_packages ca-certificates curl jq iproute2 openssl socat
 }
 
 refresh_sing_box_version() {
@@ -1627,22 +1604,19 @@ refresh_sing_box_version() {
   fi
 }
 
-install_or_update_sing_box_package() {
-  ensure_sagernet_repo
-  APT_UPDATED=0
-  ensure_apt_updated
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y sing-box
+install_or_update_sing_box_manual() {
+  install_packages ca-certificates curl
+  curl -fsSL https://sing-box.app/install.sh | sh
   refresh_sing_box_version
 }
 
 install_sing_box() {
-  if command -v sing-box >/dev/null 2>&1 && package_installed sing-box; then
+  if command -v sing-box >/dev/null 2>&1; then
     refresh_sing_box_version
     return 0
   fi
 
-  install_or_update_sing_box_package
+  install_or_update_sing_box_manual
 }
 
 require_min_sing_box_version() {
@@ -4117,15 +4091,14 @@ update_sing_box_command() {
 
   require_root
   check_os
-  install_packages ca-certificates curl gpg
   refresh_sing_box_version
   previous_version="${SING_BOX_VERSION:-not-installed}"
 
-  install_or_update_sing_box_package
+  install_or_update_sing_box_manual
   current_version="${SING_BOX_VERSION:-not-installed}"
 
   if [[ "$previous_version" == "$current_version" ]]; then
-    printf 'sing-box 已是当前仓库可安装的最新版本：%s\n' "$current_version"
+    printf 'sing-box 已是当前脚本可安装的最新版本：%s\n' "$current_version"
   else
     printf 'sing-box 已更新：%s -> %s\n' "$previous_version" "$current_version"
   fi
