@@ -135,6 +135,9 @@ Commands:
   add-user       Add one user to a protocol and reload sing-box
   remove-user    Remove one user from a protocol and reload sing-box
   regenerate     Re-render config/share artifacts from saved state and reload sing-box
+  update-sing-box
+                 Upgrade sing-box from the configured repository, validate config, and restart service
+  update-geo     Refresh local geo rule-set files under the sing-box rule-set directory
   routing-menu   Interactive routing policy menu
   client-menu    Interactive sing-box client config menu
   show-info      Print saved share links and client snippets
@@ -186,6 +189,8 @@ Examples:
   ./install-sing-box.sh list-users
   ./install-sing-box.sh add-user --protocol vmess --user-name alice
   ./install-sing-box.sh remove-user --protocol socks5 --user-name socks-123abc
+  ./install-sing-box.sh update-sing-box
+  ./install-sing-box.sh update-geo
   ./install-sing-box.sh show-info
   ./install-sing-box.sh validate
   ./install-sing-box.sh restart
@@ -210,7 +215,7 @@ refresh_paths_from_target_config() {
 parse_args() {
   while (($# > 0)); do
     case "$1" in
-      install|list-users|add-user|remove-user|regenerate|show-info|validate|status|restart|stop|routing-menu|client-menu|uninstall)
+      install|list-users|add-user|remove-user|regenerate|update-sing-box|update-geo|show-info|validate|status|restart|stop|routing-menu|client-menu|uninstall)
         COMMAND="$1"
         ARG_SEEN=1
         shift
@@ -900,13 +905,15 @@ prompt_main_menu() {
     printf '%s\n' "  6) 查看分享链接与客户端片段" >&2
     printf '%s\n' "  7) 校验当前配置" >&2
     printf '%s\n' "  8) 查看服务状态" >&2
-    printf '%s\n' "  9) 重启服务" >&2
-    printf '%s\n' " 10) 停止服务" >&2
-    printf '%s\n' " 11) 分流管理" >&2
-    printf '%s\n' " 12) 客户端配置管理" >&2
-    printf '%s\n' " 13) 卸载" >&2
+    printf '%s\n' "  9) 更新 sing-box" >&2
+    printf '%s\n' " 10) 重启服务" >&2
+    printf '%s\n' " 11) 停止服务" >&2
+    printf '%s\n' " 12) 分流管理" >&2
+    printf '%s\n' " 13) 客户端配置管理" >&2
+    printf '%s\n' " 14) 更新geo" >&2
+    printf '%s\n' " 15) 卸载" >&2
     printf '%s\n' "  0) 退出" >&2
-    printf '%s' "请选择操作 [0-13]，直接回车默认安装: " >&2
+    printf '%s' "请选择操作 [0-15]，直接回车默认安装: " >&2
     read -r input
 
     case "$input" in
@@ -943,22 +950,30 @@ prompt_main_menu() {
         return 0
         ;;
       9)
-        COMMAND="restart"
+        COMMAND="update-sing-box"
         return 0
         ;;
       10)
-        COMMAND="stop"
+        COMMAND="restart"
         return 0
         ;;
       11)
-        COMMAND="routing-menu"
+        COMMAND="stop"
         return 0
         ;;
       12)
-        COMMAND="client-menu"
+        COMMAND="routing-menu"
         return 0
         ;;
       13)
+        COMMAND="client-menu"
+        return 0
+        ;;
+      14)
+        COMMAND="update-geo"
+        return 0
+        ;;
+      15)
         COMMAND="uninstall"
         return 0
         ;;
@@ -1037,10 +1052,12 @@ menu_command_label() {
     show-info) printf '查看分享链接与客户端片段\n' ;;
     validate) printf '校验当前配置\n' ;;
     status) printf '查看服务状态\n' ;;
+    update-sing-box) printf '更新 sing-box\n' ;;
     restart) printf '重启服务\n' ;;
     stop) printf '停止服务\n' ;;
     routing-menu) printf '分流管理\n' ;;
     client-menu) printf '客户端配置管理\n' ;;
+    update-geo) printf '更新geo\n' ;;
     uninstall) printf '卸载\n' ;;
     *) printf '%s\n' "$1" ;;
   esac
@@ -1600,17 +1617,32 @@ EOF
   ensure_apt_updated
 }
 
-install_sing_box() {
-  if command -v sing-box >/dev/null 2>&1 && package_installed sing-box; then
+refresh_sing_box_version() {
+  if command -v sing-box >/dev/null 2>&1; then
     SING_BOX_VERSION="$(sing-box version 2>/dev/null | head -n 1 || true)"
     SING_BOX_VERSION_NUMBER="$(printf '%s\n' "$SING_BOX_VERSION" | awk 'NR==1{print $NF}' | sed 's/^v//')"
+  else
+    SING_BOX_VERSION="not-installed"
+    SING_BOX_VERSION_NUMBER=""
+  fi
+}
+
+install_or_update_sing_box_package() {
+  ensure_sagernet_repo
+  APT_UPDATED=0
+  ensure_apt_updated
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y sing-box
+  refresh_sing_box_version
+}
+
+install_sing_box() {
+  if command -v sing-box >/dev/null 2>&1 && package_installed sing-box; then
+    refresh_sing_box_version
     return 0
   fi
 
-  ensure_sagernet_repo
-  install_packages sing-box
-  SING_BOX_VERSION="$(sing-box version 2>/dev/null | head -n 1 || true)"
-  SING_BOX_VERSION_NUMBER="$(printf '%s\n' "$SING_BOX_VERSION" | awk 'NR==1{print $NF}' | sed 's/^v//')"
+  install_or_update_sing_box_package
 }
 
 require_min_sing_box_version() {
@@ -2431,29 +2463,152 @@ routing_status_brief() {
     "$(if [[ "$ROUTE_BLOCK_ADS" == "1" ]]; then printf 'on'; else printf 'off'; fi)"
 }
 
+rule_set_url_by_tag() {
+  case "$1" in
+    geosite-cn)
+      printf 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs\n'
+      ;;
+    geoip-cn)
+      printf 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs\n'
+      ;;
+    geosite-category-ads-all)
+      printf 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs\n'
+      ;;
+    *)
+      die "Unsupported rule-set tag: $1"
+      ;;
+  esac
+}
+
 download_rule_set_file() {
   local tag="$1"
   local url="$2"
+  local force="${3:-0}"
   local target="$RULE_SET_DIR/$tag.srs"
+  local tmp_target=""
 
-  if [[ -s "$target" ]]; then
+  if [[ "$force" != "1" && -s "$target" ]]; then
     return 0
   fi
 
-  curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o "$target"
-  [[ -s "$target" ]] || die "Downloaded rule-set file is empty: $target"
+  tmp_target="$(mktemp "$RULE_SET_DIR/.${tag}.XXXXXX.tmp")"
+  if ! curl -fsSL --connect-timeout 10 --max-time 60 "$url" -o "$tmp_target"; then
+    rm -f -- "$tmp_target"
+    die "Failed to download rule-set file: $url"
+  fi
+  [[ -s "$tmp_target" ]] || {
+    rm -f -- "$tmp_target"
+    die "Downloaded rule-set file is empty: $url"
+  }
+  mv -f -- "$tmp_target" "$target"
   chmod 0644 "$target"
 }
 
-download_required_rule_sets() {
+required_rule_set_tags() {
   if [[ "$ROUTE_BLOCK_CN" == "1" ]]; then
-    download_rule_set_file "geosite-cn" "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
-    download_rule_set_file "geoip-cn" "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+    printf '%s\n' "geosite-cn" "geoip-cn"
   fi
 
   if [[ "$ROUTE_BLOCK_ADS" == "1" ]]; then
-    download_rule_set_file "geosite-category-ads-all" "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs"
+    printf '%s\n' "geosite-category-ads-all"
   fi
+}
+
+updatable_geo_rule_set_tags() {
+  if [[ "$ROUTE_BLOCK_CN" == "1" || -s "$RULE_SET_DIR/geosite-cn.srs" || -s "$RULE_SET_DIR/geoip-cn.srs" ]]; then
+    printf '%s\n' "geosite-cn" "geoip-cn"
+  fi
+
+  if [[ "$ROUTE_BLOCK_ADS" == "1" || -s "$RULE_SET_DIR/geosite-category-ads-all.srs" ]]; then
+    printf '%s\n' "geosite-category-ads-all"
+  fi
+}
+
+download_required_rule_sets() {
+  local tag=""
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] || continue
+    download_rule_set_file "$tag" "$(rule_set_url_by_tag "$tag")"
+  done < <(required_rule_set_tags)
+}
+
+load_geo_update_flags() {
+  local value=""
+
+  ROUTE_BLOCK_CN="0"
+  ROUTE_BLOCK_ADS="0"
+  load_state
+
+  if [[ "$STATE_LOADED" -eq 1 ]]; then
+    value="$(state_value '.routing.block_cn')"
+    [[ -n "$value" ]] && ROUTE_BLOCK_CN="$value"
+    value="$(state_value '.routing.block_ads')"
+    [[ -n "$value" ]] && ROUTE_BLOCK_ADS="$value"
+  fi
+}
+
+reload_service_after_geo_update() {
+  if ! command -v sing-box >/dev/null 2>&1; then
+    printf 'geo 文件已更新，但当前系统未安装 sing-box，未执行服务重载。\n'
+    return 0
+  fi
+
+  if [[ ! -f "$TARGET_CONFIG" ]]; then
+    printf 'geo 文件已更新，但未找到当前配置文件：%s\n' "$TARGET_CONFIG"
+    return 0
+  fi
+
+  if ! jq -e --arg rule_set_dir "$RULE_SET_DIR/" '
+    (.route.rule_set // []) | any(.type == "local" and (.path // "" | startswith($rule_set_dir)))
+  ' "$TARGET_CONFIG" >/dev/null 2>&1; then
+    printf '当前配置未使用本地 geo 规则集，无需重启 sing-box。\n'
+    return 0
+  fi
+
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    sing-box check -c "$TARGET_CONFIG"
+    systemctl restart "$SERVICE_NAME"
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+      journalctl -u "$SERVICE_NAME" --no-pager -n 100 || true
+      die "$SERVICE_NAME failed to restart after geo update"
+    fi
+    printf '已重启 sing-box，新 geo 文件已生效。\n'
+  else
+    printf '当前 sing-box 未运行；新的 geo 文件会在下次启动时生效。\n'
+  fi
+}
+
+update_geo_command() {
+  local tag=""
+  local tags=()
+
+  require_root
+  prepare_dirs
+  load_geo_update_flags
+
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] || continue
+    tags+=("$tag")
+  done < <(updatable_geo_rule_set_tags)
+
+  if ((${#tags[@]} == 0)); then
+    warn "当前没有需要更新的本地 geo 规则集。"
+    printf '可更新目录：%s\n' "$RULE_SET_DIR"
+    printf '如需生成 geo 文件，请先在“分流管理”中启用“回国限制”或“广告拦截”。\n'
+    return 0
+  fi
+
+  for tag in "${tags[@]}"; do
+    download_rule_set_file "$tag" "$(rule_set_url_by_tag "$tag")" "1"
+  done
+
+  printf '已更新以下 geo 文件：\n'
+  for tag in "${tags[@]}"; do
+    printf '  %s\n' "$RULE_SET_DIR/$tag.srs"
+  done
+
+  reload_service_after_geo_update
 }
 
 build_route_rules_json() {
@@ -3956,6 +4111,41 @@ regenerate_command() {
   show_saved_artifacts
 }
 
+update_sing_box_command() {
+  local previous_version="not-installed"
+  local current_version="not-installed"
+
+  require_root
+  check_os
+  install_packages ca-certificates curl gpg
+  refresh_sing_box_version
+  previous_version="${SING_BOX_VERSION:-not-installed}"
+
+  install_or_update_sing_box_package
+  current_version="${SING_BOX_VERSION:-not-installed}"
+
+  if [[ "$previous_version" == "$current_version" ]]; then
+    printf 'sing-box 已是当前仓库可安装的最新版本：%s\n' "$current_version"
+  else
+    printf 'sing-box 已更新：%s -> %s\n' "$previous_version" "$current_version"
+  fi
+
+  if [[ ! -f "$TARGET_CONFIG" ]]; then
+    warn "当前未发现配置文件：$TARGET_CONFIG，已跳过配置校验和服务重启。"
+    return 0
+  fi
+
+  validate_existing_config
+
+  if ! systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
+    warn "当前未发现 systemd 服务单元 ${SERVICE_NAME}.service，已跳过服务重启。"
+    return 0
+  fi
+
+  systemctl restart "$SERVICE_NAME"
+  show_service_status
+}
+
 routing_menu_command() {
   local input=""
 
@@ -4144,6 +4334,12 @@ handle_non_install_command() {
       ;;
     regenerate)
       regenerate_command
+      ;;
+    update-sing-box)
+      update_sing_box_command
+      ;;
+    update-geo)
+      update_geo_command
       ;;
     show-info)
       show_saved_artifacts
